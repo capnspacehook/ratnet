@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/awgh/bencrypt/bc"
 	"github.com/awgh/bencrypt/ecc"
 	"github.com/awgh/ratnet/api"
+	"github.com/awgh/ratnet/api/chunking"
+	"github.com/awgh/ratnet/api/events"
 )
 
 // CID : Return content key
@@ -162,7 +163,7 @@ func (node *Node) LoadProfile(name string) (bc.PubKey, error) {
 		return nil, errors.New("Profile not found")
 	}
 	node.contentKey = node.profiles[name].Privkey
-	node.debugMsg("Profile Loaded: " + node.contentKey.GetPubKey().ToB64())
+	events.Debug(node, "Profile Loaded: "+node.contentKey.GetPubKey().ToB64())
 	return node.contentKey.GetPubKey(), nil
 }
 
@@ -267,12 +268,12 @@ func (node *Node) SendChannel(channelName string, data []byte, pubkey ...bc.PubK
 func (node *Node) SendMsg(msg api.Msg) error {
 
 	// determine if we need to chunk
-	chunkSize := api.ChunkSize(node)                                    // finds the minimum transport byte limit
+	chunkSize := chunking.ChunkSize(node)                               // finds the minimum transport byte limit
 	if msg.Content.Len() > 0 && uint32(msg.Content.Len()) > chunkSize { // we need to chunk
 		if msg.Chunked { // we're already chunked, freak out!
 			return errors.New("Chunked message needs to be chunked, bailing out")
 		}
-		return api.SendChunked(node, chunkSize, msg)
+		return chunking.SendChunked(node, chunkSize, msg)
 	}
 
 	data, err := node.contentKey.EncryptMessage(msg.Content.Bytes(), msg.PubKey)
@@ -352,9 +353,9 @@ func (node *Node) Start() error {
 
 			// read message off the input channel
 			message := <-node.In()
-			node.debugMsg("Message accepted on input channel")
+			events.Debug(node, "Message accepted on input channel")
 			if err := node.SendMsg(message); err != nil {
-				log.Fatal(err)
+				events.Error(node, err.Error())
 			}
 		}
 	}()
@@ -380,7 +381,7 @@ func (node *Node) Start() error {
 					for i := uint32(0); i < stream.NumChunks; i++ {
 						chunk, ok := node.chunks[stream.StreamID][i]
 						if !ok {
-							log.Fatal("Chunk count miscalculated - code broken")
+							events.Critical(node, "Chunk count miscalculated - code broken")
 						}
 						buf.Write(chunk.Data)
 					}
@@ -394,11 +395,11 @@ func (node *Node) Start() error {
 
 					select {
 					case node.Out() <- msg:
-						node.debugMsg("Sent message " + fmt.Sprint(msg.Content.Bytes()))
+						events.Debug(node, "Sent message "+fmt.Sprint(msg.Content.Bytes()))
 						node.streams[stream.StreamID] = nil
 						node.chunks[stream.StreamID] = make(map[uint32]*api.Chunk)
 					default:
-						node.debugMsg("No message sent")
+						events.Debug(node, "No message sent")
 					}
 				}
 			}

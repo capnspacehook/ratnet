@@ -2,13 +2,13 @@ package fs
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/awgh/bencrypt/bc"
 	"github.com/awgh/ratnet/api"
+	"github.com/awgh/ratnet/api/events"
 	"github.com/awgh/ratnet/nodes"
 	"github.com/awgh/ratnet/router"
 )
@@ -30,9 +30,9 @@ type Node struct {
 	debugMode bool
 
 	// external data members
-	in  chan api.Msg
-	out chan api.Msg
-	err chan api.Msg
+	in     chan api.Msg
+	out    chan api.Msg
+	events chan api.Event
 
 	// db -> ram replacements
 	channels map[string]*api.ChannelPriv
@@ -69,7 +69,7 @@ func New(contentKey, routingKey bc.KeyPair, basePath string) *Node {
 	// setup chans
 	node.in = make(chan api.Msg)
 	node.out = make(chan api.Msg)
-	node.err = make(chan api.Msg)
+	node.events = make(chan api.Event)
 
 	// setup default router
 	node.router = router.NewDefaultRouter()
@@ -109,14 +109,14 @@ func (node *Node) FlushOutbox(maxAgeSeconds int64) {
 	now := time.Now()
 	_ = filepath.Walk(node.basePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			log.Printf("FlushOutbox failure accessing a path %q: %v\n", path, err)
+			events.Warning(node, "FlushOutbox failure accessing a path:", path, err.Error())
 			return err
 		}
 		if !info.IsDir() {
 			if diff := now.Sub(info.ModTime()); diff > time.Duration(maxAgeSeconds)*time.Second {
-				log.Printf("Deleting %s which is %s seconds old\n", filepath.Join(node.basePath, info.Name()), diff)
+				events.Debug(node, "Deleting file:", filepath.Join(node.basePath, info.Name()), diff)
 				if err = os.Remove(path); err != nil {
-					log.Println("error deleting file: " + err.Error())
+					events.Error(node, "error deleting file: "+err.Error())
 				}
 			}
 		}
@@ -136,9 +136,9 @@ func (node *Node) Out() chan api.Msg {
 	return node.out
 }
 
-// Err : Returns the Err channel of this node
-func (node *Node) Err() chan api.Msg {
-	return node.err
+// Events : Returns the Events channel of this node
+func (node *Node) Events() chan api.Event {
+	return node.events
 }
 
 // RPC set to default handlers

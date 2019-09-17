@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/awgh/ratnet/api"
+	"github.com/awgh/ratnet/api/events"
 
 	"upper.io/db.v3"
 	"upper.io/db.v3/lib/sqlbuilder"
@@ -65,8 +65,7 @@ func (node *Node) dbAddContact(name, pubkey string) error {
 	contact := api.Contact{Name: name, Pubkey: pubkey}
 	_, err = col.Insert(&contact)
 	if err != nil {
-		s := err.Error()
-		log.Println(s)
+		events.Error(node, err.Error())
 		return err
 	}
 	return tx.Commit()
@@ -145,8 +144,7 @@ func (node *Node) dbAddChannel(name, privkey string) error {
 	channel := api.ChannelPrivDB{Name: name, Privkey: prv.ToB64()}
 	_, err = col.Insert(&channel)
 	if err != nil {
-		s := err.Error()
-		log.Println(s)
+		events.Error(node, err.Error())
 		return err
 	}
 	return tx.Commit()
@@ -384,7 +382,7 @@ func (node *Node) dbGetMessages(lastTime, maxBytes int64, channelNames ...string
 		var ts int64
 		res.Scan(&msg, &ts)
 		if bytesRead+int64(len(msg)) >= maxBytes { // no room for next msg
-			log.Printf("skipping messages after %d results\n", n)
+			events.Debug(node, "skipping messages after %d results\n", n)
 			if n == 0 {
 				return nil, lastTimeReturned, errors.New("Result too big to be fetched on this transport! Flush and rechunk")
 			}
@@ -392,12 +390,11 @@ func (node *Node) dbGetMessages(lastTime, maxBytes int64, channelNames ...string
 		if ts > lastTimeReturned {
 			lastTimeReturned = ts
 		} else {
-			log.Printf("Timestamps not increasing - prev: %d  cur: %d\n", lastTimeReturned, ts)
+			events.Error(node, "Timestamps not increasing - prev: %d  cur: %d\n", lastTimeReturned, ts)
 		}
 		msgs = append(msgs, msg)
 		bytesRead += int64(len(msg))
 	}
-	//log.Println("last time/returned:", lastTime, lastTimeReturned)
 	return msgs, lastTimeReturned, nil
 }
 
@@ -410,6 +407,7 @@ func (node *Node) dbClearStream(streamID uint32) error {
 	return res.Delete()
 }
 
+// AddStream - implemented from Node API
 func (node *Node) AddStream(streamID uint32, totalChunks uint32, channelName string) error {
 	col := node.db.Collection("streams")
 	res := col.Find().Where("streamid = ?", streamID)
@@ -430,13 +428,14 @@ func (node *Node) AddStream(streamID uint32, totalChunks uint32, channelName str
 	if err != nil {
 		return err
 	}
-	log.Printf("warning: over-writing stream header: %x\n", streamID)
+	events.Warning(node, "Over-writing stream header: %x\n", streamID)
 	stream.StreamID = streamID
 	stream.NumChunks = totalChunks
 	stream.ChannelName = channelName
 	return res.Update(stream)
 }
 
+// AddChunk - implemented from Node API
 func (node *Node) AddChunk(streamID uint32, chunkNum uint32, data []byte) error {
 	col := node.db.Collection("chunks")
 	res := col.Find().Where("streamid = ?", streamID).And("chunknum = ?", chunkNum)
@@ -457,7 +456,7 @@ func (node *Node) AddChunk(streamID uint32, chunkNum uint32, data []byte) error 
 	if err != nil {
 		return err
 	}
-	log.Printf("warning: over-writing chunk: %x:%x\n", streamID, chunkNum)
+	events.Warning(node, "Over-writing chunk: %x:%x\n", streamID, chunkNum)
 	chunk.StreamID = streamID
 	chunk.ChunkNum = chunkNum
 	chunk.Data = data
@@ -513,8 +512,7 @@ func (node *Node) BootstrapDB(dbAdapter, dbConnectionString string) sqlbuilder.D
 	var err error
 	node.db, err = sqlbuilder.Open(dbAdapter, connectionURL{url: dbConnectionString})
 	if err != nil {
-		//node.errMsg(errors.New("DB Error Opening: "+dbAdapter+" => "+err.Error()), true)
-		log.Fatal(err)
+		events.Critical(node, err.Error())
 	}
 
 	strName := getBackendType(dbAdapter, "string")
@@ -609,8 +607,7 @@ func (node *Node) BootstrapDB(dbAdapter, dbConnectionString string) sqlbuilder.D
 	res1 := col.Find("name = ?", "contentkey")
 	cnt, err := res1.Count()
 	if err != nil {
-		node.errMsg(err, true)
-		log.Fatal(err)
+		events.Critical(node, err)
 	} else if cnt == 0 {
 		node.contentKey.GenerateKey()
 		bs := node.contentKey.ToB64()
@@ -622,14 +619,14 @@ func (node *Node) BootstrapDB(dbAdapter, dbConnectionString string) sqlbuilder.D
 		err = node.contentKey.FromB64(cv.Value)
 	}
 	if err != nil {
-		node.errMsg(err, true)
+		events.Critical(node, err)
 	}
 
 	// Routing Key Setup
 	res2 := col.Find("name = ?", "routingkey")
 	cnt, err = res2.Count()
 	if err != nil {
-		node.errMsg(err, true)
+		events.Critical(node, err)
 	} else if cnt == 0 {
 		node.routingKey.GenerateKey()
 		bs := node.routingKey.ToB64()
@@ -641,7 +638,7 @@ func (node *Node) BootstrapDB(dbAdapter, dbConnectionString string) sqlbuilder.D
 		err = node.routingKey.FromB64(cv.Value)
 	}
 	if err != nil {
-		node.errMsg(err, true)
+		events.Critical(node, err)
 	}
 
 	node.refreshChannels()

@@ -4,20 +4,76 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"log"
+	"hash/crc32"
+	"math"
+	"sort"
+	"sync"
 
 	"github.com/awgh/ratnet"
 	"github.com/awgh/ratnet/api"
 )
+
+const (
+	cacheSize     = 4 * 1024
+	cacheDiscount = int(0.25 * cacheSize)
+	nonceSize     = 32
+)
+
+// RecentBuffer - Used for tracking recently seen messages
+type RecentBuffer struct {
+	mtx           sync.Mutex
+	recentBuffer  map[uint32]int
+	reverseBuffer map[int]uint32
+	counter       int
+}
+
+func newRecentBuffer() (r RecentBuffer) {
+	r.recentBuffer = make(map[uint32]int, cacheSize)
+	r.reverseBuffer = make(map[int]uint32, cacheSize)
+	r.counter = 0
+	return
+}
+
+// SeenRecently : Returns whether this message should be filtered out by loop detection
+func (r *RecentBuffer) SeenRecently(nonce []byte) bool {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+	nonceHash := crc32.ChecksumIEEE(nonce)
+
+	_, seen := r.recentBuffer[nonceHash]
+	if !seen {
+		r.recentBuffer[nonceHash] = r.counter
+		r.reverseBuffer[r.counter] = nonceHash
+		if r.counter == math.MaxInt32 { // todo doc: cacheSize is limited to MaxInt32
+			r.counter = 0
+		} else {
+			r.counter++
+		}
+	}
+	// garbage collection
+	m := len(r.recentBuffer)
+	if m >= cacheSize {
+		values := make([]int, 0, m)
+		for _, v := range r.recentBuffer {
+			values = append(values, v)
+		}
+		sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+		discount := (cacheSize - m) + cacheDiscount
+		for i := 0; i < discount; i++ {
+			nh := r.reverseBuffer[values[i]]
+			delete(r.reverseBuffer, values[i])
+			delete(r.recentBuffer, nh)
+		}
+	}
+	return seen
+}
 
 // DefaultRouter - The Default router makes no changes at all,
 //                 every message is sent out on the same channel it came in on,
 //                 and non-channel messages are consumed but not forwarded
 type DefaultRouter struct {
 	// Internal
-	recentPageIdx int
-	recentPage1   map[[16]byte]byte
-	recentPage2   map[[16]byte]byte
+	RecentBuffer
 
 	Patches []api.Patch
 
@@ -67,8 +123,7 @@ func NewDefaultRouter() *DefaultRouter {
 	r.ForwardConsumedChannels = true
 	r.ForwardConsumedProfiles = false
 	// init page maps
-	r.recentPage1 = make(map[[16]byte]byte)
-	r.recentPage2 = make(map[[16]byte]byte)
+	r.RecentBuffer = newRecentBuffer()
 	return r
 }
 
@@ -119,22 +174,14 @@ func (r *DefaultRouter) Route(node api.Node, message []byte) error {
 	var channelLen uint16 // beginning uint16 of message is channel name length
 	if msg.IsChan {
 		channelLen = (uint16(message[1]) << 8) | uint16(message[2])
-		/*
-			if len(message) < int(channelLen)+1+2+56 { //+64 { // flags + uint16 + LuggageTag
-
-				log.Println(message)
-				return errors.New("Incorrect channel name length")
-			}
-		*/
 		msg.Name = string(message[3 : 3+channelLen]) // flags[0], chan name length[1,2]
-		idx += 2 + int(channelLen)                   //skip over the channel name
+		idx += 2 + int(channelLen)                   // skip over the channel name
 	}
 	if idx+16 >= len(message) {
-		log.Println(message)
 		return errors.New("Malformed message")
 	}
-	nonce := message[idx : idx+16] // todo: this is truncating half the pubkey
-	if r.seenRecently(nonce) {     // LOOP PREVENTION before handling or forwarding
+	nonce := message[idx : idx+nonceSize]
+	if r.SeenRecently(nonce) { // LOOP PREVENTION before handling or forwarding
 		return nil
 	}
 	cid, err := node.CID() // we need this for cloning
@@ -206,48 +253,6 @@ func (r *DefaultRouter) Route(node api.Node, message []byte) error {
 		}
 	}
 	return nil
-}
-
-// seenRecently : Returns whether this message should be filtered out by loop detection
-func (r *DefaultRouter) seenRecently(hdr []byte) bool {
-
-	halfCacheSize := 50
-
-	var shdr [16]byte // todo: truncating half of shared key
-	copy(shdr[:], hdr[:16])
-	_, aok := r.recentPage1[shdr]
-	_, bok := r.recentPage2[shdr]
-	retval := aok || bok
-
-	//log.Printf("seen: %+v len1: %d len2: %d\n", shdr, len(r.recentPage1), len(r.recentPage2))
-
-	switch r.recentPageIdx {
-	default:
-		fallthrough
-	case 0:
-		if len(r.recentPage1) >= halfCacheSize {
-			if len(r.recentPage2) >= halfCacheSize {
-				r.recentPage2 = nil
-				r.recentPage2 = make(map[[16]byte]byte)
-			}
-			r.recentPageIdx = 1
-			r.recentPage2[shdr] = 1
-		} else {
-			r.recentPage1[shdr] = 1
-		}
-	case 1:
-		if len(r.recentPage2) >= halfCacheSize {
-			if len(r.recentPage1) >= halfCacheSize {
-				r.recentPage1 = nil
-				r.recentPage1 = make(map[[16]byte]byte)
-			}
-			r.recentPageIdx = 0
-			r.recentPage1[shdr] = 1
-		} else {
-			r.recentPage2[shdr] = 1
-		}
-	}
-	return retval
 }
 
 // MarshalJSON : Create a serialized JSON blob out of the config of this router

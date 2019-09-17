@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/awgh/bencrypt/bc"
 	"github.com/awgh/ratnet/api"
+	"github.com/awgh/ratnet/api/chunking"
+	"github.com/awgh/ratnet/api/events"
 )
 
 // CID : Return content key
@@ -109,11 +110,11 @@ func (node *Node) LoadProfile(name string) (bc.PubKey, error) {
 	pk := node.dbGetProfilePrivateKey(name)
 	profileKey := node.contentKey.Clone()
 	if err := profileKey.FromB64(pk); err != nil {
-		node.errMsg(err, false)
+		events.Error(node, err)
 		return nil, err
 	}
 	node.contentKey = profileKey
-	node.debugMsg("Profile Loaded: " + profileKey.GetPubKey().ToB64())
+	events.Debug(node, "Profile Loaded: "+profileKey.GetPubKey().ToB64())
 	return profileKey.GetPubKey(), nil
 }
 
@@ -177,7 +178,7 @@ func (node *Node) SendChannel(channelName string, data []byte, pubkey ...bc.PubK
 	}
 
 	if destkey == nil {
-		log.Fatal("nil DestKey in SendChannel")
+		events.Critical(node, "nil DestKey in SendChannel")
 	}
 	return node.SendMsg(api.Msg{Name: channelName, Content: bytes.NewBuffer(data), IsChan: true, PubKey: destkey, Chunked: false})
 }
@@ -186,12 +187,12 @@ func (node *Node) SendChannel(channelName string, data []byte, pubkey ...bc.PubK
 func (node *Node) SendMsg(msg api.Msg) error {
 
 	// determine if we need to chunk
-	chunkSize := api.ChunkSize(node)                                    // finds the minimum transport byte limit
+	chunkSize := chunking.ChunkSize(node)                               // finds the minimum transport byte limit
 	if msg.Content.Len() > 0 && uint32(msg.Content.Len()) > chunkSize { // we need to chunk
 		if msg.Chunked { // we're already chunked, freak out!
 			return errors.New("Chunked message needs to be chunked, bailing out")
 		}
-		return api.SendChunked(node, chunkSize, msg)
+		return chunking.SendChunked(node, chunkSize, msg)
 	}
 
 	data, err := node.contentKey.EncryptMessage(msg.Content.Bytes(), msg.PubKey)
@@ -264,7 +265,7 @@ func (node *Node) SendChannelBulk(channelName string, data [][]byte, pubkey ...b
 	}
 
 	if destkey == nil {
-		log.Fatal("nil DestKey in SendChannel")
+		events.Critical(node, "nil DestKey in SendChannel")
 	}
 
 	return node.sendBulk(channelName, destkey, data)
@@ -333,7 +334,7 @@ func (node *Node) Start() error {
 				break
 			}
 			if err := node.SendMsg(message); err != nil {
-				log.Fatal(err)
+				events.Error(node, err.Error())
 			}
 		}
 	}()
@@ -348,19 +349,19 @@ func (node *Node) Start() error {
 			// get all streams
 			streams, err := node.dbGetStreams()
 			if err != nil {
-				log.Fatal(err)
+				events.Critical(node, err.Error())
 			}
 			// for each stream, count chunks for that header
 			for _, stream := range streams {
 				count, err := node.dbGetChunkCount(stream.StreamID)
 				if err != nil {
-					log.Fatal(err)
+					events.Critical(node, err.Error())
 				}
 				// if chunks == total chunks, re-assemble Msg and call Handle
 				if count == uint64(stream.NumChunks) {
 					chunks, err := node.dbGetChunks(stream.StreamID)
 					if err != nil {
-						log.Fatal(err)
+						events.Critical(node, err.Error())
 					}
 					buf := bytes.NewBuffer([]byte{})
 					for _, chunk := range chunks {
@@ -375,10 +376,10 @@ func (node *Node) Start() error {
 
 					select {
 					case node.Out() <- msg:
-						node.debugMsg("Sent message " + fmt.Sprint(msg.Content.Bytes()))
+						events.Debug(node, "Sent message "+fmt.Sprint(msg.Content.Bytes()))
 						node.dbClearStream(stream.StreamID)
 					default:
-						node.debugMsg("No message sent")
+						events.Debug(node, "No message sent")
 					}
 				}
 			}
@@ -397,5 +398,5 @@ func (node *Node) Stop() {
 
 	close(node.in)
 	close(node.out)
-	close(node.err)
+	close(node.events)
 }
