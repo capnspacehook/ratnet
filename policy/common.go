@@ -2,6 +2,7 @@ package policy
 
 import (
 	"sync"
+	"time"
 
 	"github.com/awgh/bencrypt/bc"
 	"github.com/awgh/ratnet/api"
@@ -30,8 +31,15 @@ func init() {
 	peerTable = make(map[string]*api.PeerInfo)
 }
 
+// IdleCallback is a function that is called when polling a server
+// and there are no outgoing messages to send. It is called before
+// any outgoing messages are sent. True should be returned if
+// node.Pickup should be called after the IdleCallback returns,
+// false otherwise.
+type IdleCallback func(node api.Node) bool
+
 // PollServer does a Push/Pull between a local and remote Node
-func PollServer(transport api.Transport, node api.Node, host string, pubsrv bc.PubKey) (bool, error) {
+func PollServer(transport api.Transport, node api.Node, host string, pubsrv bc.PubKey, idleCallback IdleCallback) (bool, error) {
 	// make PeerInfo for this host if doesn't exist
 	if _, ok := readPeerTable(host); !ok {
 		writePeerTable(host, new(api.PeerInfo))
@@ -59,6 +67,17 @@ func PollServer(transport api.Transport, node api.Node, host string, pubsrv bc.P
 		return false, err
 	}
 	events.Debug(node, "pollServer Pickup Local result len: ", len(toRemote.Data))
+
+	if idleCallback != nil && len(toRemote.Data) == 0 {
+		beforeIdleCallback := time.Now().Unix()
+		if idleCallback(node) {
+			toRemote, err = node.Pickup(peer.RoutingPub, beforeIdleCallback, transport.ByteLimit())
+			if err != nil {
+				events.Error(node, "local pickup error: "+err.Error())
+				return false, err
+			}
+		}
+	}
 
 	// Pickup Remote
 	toLocalRaw, err := transport.RPC(host, api.Pickup, pubsrv, peer.LastPollRemote)

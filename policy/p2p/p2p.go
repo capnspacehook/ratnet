@@ -36,6 +36,8 @@ type P2P struct {
 	Transport     api.Transport
 	Node          api.Node
 
+	idleCallback policy.IdleCallback
+
 	listenSocket *net.UDPConn
 	dialSocket   *net.UDPConn
 }
@@ -63,6 +65,12 @@ func New(transport api.Transport, listenURI string, node api.Node, adminMode boo
 
 	s.rerollNegotiationRank()
 	return s
+}
+
+// SetIdleCallback : Set the callback that will get called when peers are polled
+// and there is are no outgoing messages
+func (p *P2P) SetIdleCallback(i policy.IdleCallback) {
+	p.idleCallback = i
 }
 
 func (s *P2P) initListenSocket() {
@@ -205,7 +213,7 @@ func (s *P2P) mdnsListen() error {
 				go func() {
 					for s.IsListening {
 						st := time.Now()
-						if happy, err := policy.PollServer(trans, s.Node, target[len(u.Scheme)+3:], pubsrv); !happy {
+						if happy, err := policy.PollServer(trans, s.Node, target[len(u.Scheme)+3:], pubsrv, s.idleCallback); !happy {
 							if err != nil {
 								events.Warning(s.Node, err.Error())
 							}
