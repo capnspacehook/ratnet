@@ -205,7 +205,7 @@ func (s *P2P) mdnsListen() error {
 				go func() {
 					for s.IsListening {
 						st := time.Now()
-						if happy, err := policy.PollServer(trans, s.Node, target[len(u.Scheme)+3:], pubsrv); !happy {
+						if happy, err := policy.PollServer(trans, s.Node, target[len(u.Scheme)+3:], pubsrv, nil); !happy {
 							if err != nil {
 								events.Warning(s.Node, err.Error())
 							}

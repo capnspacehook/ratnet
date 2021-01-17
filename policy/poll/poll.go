@@ -27,6 +27,8 @@ type Poll struct {
 	interval int32
 	jitter   int32
 
+	idleCallback policy.IdleCallback
+
 	Groups        []string
 	curGroupIndex int
 
@@ -72,6 +74,11 @@ func (p *Poll) GetJitter() int {
 // SetJitter : Set the percentage of which the interval with be randomly skewed
 func (p *Poll) SetJitter(newJitter int) {
 	atomic.StoreInt32(&p.jitter, int32(newJitter))
+}
+
+// SetIdleCallback : Set the callback that will get called when
+func (p *Poll) SetIdleCallback(i policy.IdleCallback) {
+	p.idleCallback = i
 }
 
 // RunPolicy : Poll
@@ -132,7 +139,7 @@ func (p *Poll) RunPolicy() error {
 				if element.Enabled && fails[element.URI] < p.RetryAttempts {
 					tries++
 
-					_, err := policy.PollServer(p.Transport, p.node, element.URI, pubsrv)
+					_, err := policy.PollServer(p.Transport, p.node, element.URI, pubsrv, p.idleCallback)
 					if err != nil {
 						events.Warning(p.node, "pollServer error: ", err.Error())
 						fails[element.URI]++

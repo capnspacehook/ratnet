@@ -2,6 +2,7 @@ package policy
 
 import (
 	"sync"
+	"time"
 
 	"github.com/awgh/bencrypt/bc"
 	"github.com/awgh/ratnet/api"
@@ -30,8 +31,10 @@ func init() {
 	peerTable = make(map[string]*api.PeerInfo)
 }
 
+type IdleCallback func(host string) (contact string, msg []byte)
+
 // PollServer does a Push/Pull between a local and remote Node
-func PollServer(transport api.Transport, node api.Node, host string, pubsrv bc.PubKey) (bool, error) {
+func PollServer(transport api.Transport, node api.Node, host string, pubsrv bc.PubKey, idleCallback IdleCallback) (bool, error) {
 	// make PeerInfo for this host if doesn't exist
 	if _, ok := readPeerTable(host); !ok {
 		writePeerTable(host, new(api.PeerInfo))
@@ -59,6 +62,20 @@ func PollServer(transport api.Transport, node api.Node, host string, pubsrv bc.P
 		return false, err
 	}
 	events.Debug(node, "pollServer Pickup Local result len: ", len(toRemote.Data))
+
+	if idleCallback != nil && toRemote.Data == nil {
+		currentTime := time.Now().Unix()
+		contact, msg := idleCallback(host)
+		if err := node.Send(contact, msg); err != nil {
+			events.Error(node, "local send error: "+err.Error())
+			return false, err
+		}
+		toRemote, err = node.Pickup(peer.RoutingPub, currentTime, transport.ByteLimit())
+		if err != nil {
+			events.Error(node, "local pickup error: "+err.Error())
+			return false, err
+		}
+	}
 
 	// Pickup Remote
 	toLocalRaw, err := transport.RPC(host, api.Pickup, pubsrv, peer.LastPollRemote)
