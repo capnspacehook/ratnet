@@ -15,6 +15,7 @@ import (
 // Poll : defines a Polling Connection Policy, which will periodically connect to each remote Peer
 type Poll struct {
 	// internal
+	mtx       sync.Mutex
 	wg        sync.WaitGroup
 	isRunning bool
 
@@ -79,7 +80,9 @@ func (p *Poll) SetJitter(newJitter int) {
 // SetIdleCallback : Set the callback that will get called when peers are polled
 // and there is are no outgoing messages
 func (p *Poll) SetIdleCallback(i policy.IdleCallback) {
+	p.mtx.Lock()
 	p.idleCallback = i
+	p.mtx.Unlock()
 }
 
 // RunPolicy : Poll
@@ -140,7 +143,9 @@ func (p *Poll) RunPolicy() error {
 				if element.Enabled && fails[element.URI] < p.RetryAttempts {
 					tries++
 
+					p.mtx.Lock()
 					_, err := policy.PollServer(p.Transport, p.node, element.URI, pubsrv, p.idleCallback)
+					p.mtx.Unlock()
 					if err != nil {
 						events.Warning(p.node, "pollServer error: ", err.Error())
 						fails[element.URI]++

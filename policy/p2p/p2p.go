@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/awgh/ratnet/api"
@@ -24,6 +25,8 @@ type P2P struct {
 	negotiationRank uint64
 	// last poll times - moving to peerTable
 	// lastPollLocal, lastPollRemote int64
+
+	mtx sync.Mutex
 
 	ListenInterval    int
 	AdvertiseInterval int
@@ -69,8 +72,10 @@ func New(transport api.Transport, listenURI string, node api.Node, adminMode boo
 
 // SetIdleCallback : Set the callback that will get called when peers are polled
 // and there is are no outgoing messages
-func (p *P2P) SetIdleCallback(i policy.IdleCallback) {
-	p.idleCallback = i
+func (s *P2P) SetIdleCallback(i policy.IdleCallback) {
+	s.mtx.Lock()
+	s.idleCallback = i
+	s.mtx.Unlock()
 }
 
 func (s *P2P) initListenSocket() {
@@ -213,11 +218,13 @@ func (s *P2P) mdnsListen() error {
 				go func() {
 					for s.IsListening {
 						st := time.Now()
+						s.mtx.Lock()
 						if happy, err := policy.PollServer(trans, s.Node, target[len(u.Scheme)+3:], pubsrv, s.idleCallback); !happy {
 							if err != nil {
 								events.Warning(s.Node, err.Error())
 							}
 						}
+						s.mtx.Unlock()
 						st2 := time.Now()
 						events.Debug(s.Node, "p2p PollServer took: %s\n", st2.Sub(st).String())
 						runtime.GC()
